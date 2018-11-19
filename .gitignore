@@ -1,0 +1,7 @@
+# Ignore all
+*
+
+# Unignore all with extensions
+!*.*
+
+G5_revenue_modeling_ff_launch_blend.R
