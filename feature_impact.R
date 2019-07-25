@@ -427,17 +427,30 @@ categorydata <- alldata %>%
   arrange(desc(delta))
 
 write.csv(alldata, 'feature_impact_deltas.csv', row.names=FALSE)
+alldata <- read_csv('feature_impact_deltas.csv', col_types=cols(
+  category = col_factor(),
+  feature = col_factor()
+))
 View(alldata %>% arrange(desc(delta)) %>% filter(!is.na(feature)))
 
 
-top10 <- arrange(alldata, desc(delta)) %>% filter(!is.na(feature)) %>% dplyr::top_n(15, delta) %>% pull(delta)
-ggplot(alldata, aes(date)) +
+
+
+plotdata <- filter(alldata, date >= pull(filter(alldata, feature == 'Catoblepas Destroyer'), date))
+n_events <- 5
+top10 <- arrange(plotdata, desc(delta)) %>% filter(!is.na(feature)) %>% dplyr::top_n(n_events, delta) %>% pull(delta)
+
+ggplot(plotdata, aes(date)) +
   geom_line(aes(y=revenue, color='revenue')) +
   geom_line(aes(y=pred, color='pred')) +
   geom_point(aes(y=ifelse(!is.na(feature), revenue, NA))) +
-  geom_text(aes(y=ifelse(!is.na(feature) & (delta %in% top10), revenue, NA), label=feature), nudge_y=50000) +
+  geom_text(aes(y=ifelse(!is.na(feature) & (delta %in% top10), revenue, NA), label=feature), nudge_y=0, vjust = "inward", hjust = "inward") +
   scale_x_date(date_breaks='1 month', date_labels='%b %y') +
-  labs(title='Revenue vs Prediction', subtitle='Using lasso regression', caption='All features indicated by points, top 15 deltas labeled')
+  labs(title='Revenue vs Prediction', subtitle='Using Gradient Boosted Trees', caption=sprintf('All features indicated by points, top %d deltas labeled', n_events)) +
+  theme(plot.title = element_text(hjust=.5), plot.subtitle = element_text(hjust=.5))
+
+
+ggsave_default('feature_impact_rev_pred.png', 10, 9)
 
 
 ggplot(alldata, aes(date, delta, group=1, label=feature)) +

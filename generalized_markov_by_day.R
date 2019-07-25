@@ -2,14 +2,53 @@
 
 # Date: 9/24/2018
 
-p_load(ggplot2, reshape2, plotly, lubridate, zoo, expm, dplyr, beepr)
+p_load(reshape2, lubridate, zoo, expm, beepr, scales, ggplot2, dplyr)
 
 source('~/.Rprofile')
+source('~/MZ/R Code/revenue_impact_finance_helper.R')
 source('~/MZ/R Code/generalized_markov_model_helper.R')
 setwd(datapath)
 
-# mydata <- read.csv('niso_state_data_zeus.csv')
-#
+NISO_START_DATE <- as.Date('2017-06-28')
+MISO_START_DATE <- as.Date('2018-11-01')
+
+game <- 'niso'
+
+if(game == 'miso'){
+  startdate <- MISO_START_DATE
+}else if(game == 'niso'){
+  startdate <- NISO_START_DATE
+}else{
+  stop('game not recognized')
+}
+
+dataname <- paste0(game, '_markov_data')
+enddate <- as.Date('2019-02-09')
+daterange <- paste(startdate, enddate, sep='_')
+filename <- paste0(dataname, '_', daterange)
+
+
+mydata <- read.csv(paste0(filename, '.csv'))
+
+# hive parsing
+
+mydata <- mydata %>%
+  select(-X) %>%
+  filter(install_platform %in% c('android', 'iOS')) %>%
+  rename(date = curr_date) %>%
+  mutate(
+    install_date = as.Date(install_date),
+    date = as.Date(date),
+    install_platform = factor(install_platform),
+    state = as.factor(state),
+    next_state = as.factor(next_state),
+    trans_prob = n / state_count,
+    arpdau_overall = revenue_overall / state_count,
+    arpdau = revenue / n
+  )
+
+# vertica parsing
+
 # mydata <- mydata %>%
 #   filter(!is.na(install_platform)) %>%
 #   rename(date = DATE) %>%
@@ -25,71 +64,42 @@ setwd(datapath)
 #
 # summary(mydata)
 # sapply(mydata, class)
-#
-# saveRDS(mydata, 'niso_state_data.RData')
-mydata <- readRDS('niso_state_data.RData')
 
-max_cohortday <- 90
+saveRDS(mydata, paste0(filename, '.RData'))
+mydata <- readRDS(paste0(filename, '.RData'))
+
+# Date filter
+
+# mydata <- filter(mydata, date > max(date) - 8)
+daterange <- paste0(as.Date(min(mydata$date)), '_', as.Date(max(mydata$date)))
+filename <- paste0(dataname, '_', daterange)
+
+max_cohortday <- max(mydata$cohortday)
 
 # group_variables <- quos(campaign_type, install_platform, dup_account)
-group_variables <- quos()
+group_variables <- NULL
 
-transitiondata <- filter(mydata, !is.na(next_state))
+markovmodel <- buildModel(mydata, group_variables, max_cohortday)
 
-install_transition <- mydata %>%
-  filter(cohortday == 0) %>%
-  group_by(!!! group_variables, state) %>%
-  summarise(
-    trans_prob = sum(n)
-  ) %>%
-  mutate(
-    trans_prob = trans_prob / sum(trans_prob)
-  )
+saveRDS(markovmodel, sprintf('%s_markov_model.RData', filename))
+markovmodel <- readRDS(sprintf('%s_markov_model.RData', filename))
 
-# install_transition <- tibble(state = seq(0, 7), trans_prob=0) %>%
-  # mutate(
-  #   trans_prob = replace(trans_prob, which(state %in% install_transition$state), install_transition$trans_prob)
-  # )
+transitiondata <- markovmodel$transitiondata
+install_transition <- markovmodel$install_transition
+transition_matrix <- markovmodel$transition_matrix
+arpdaudata <- markovmodel$arpdaudata
+transitionMatrices <- markovmodel$transitionMatrices
+state_probs <- markovmodel$state_probs
+simulation_results <- markovmodel$simulation_results
+result <- markovmodel$result
+result_summary <- markovmodel$result_summary
 
-transition_matrix <- transitiondata %>%
-  group_by(!!! group_variables, cohortday, state, next_state) %>%
-  summarise(
-    users = sum(n)
-  ) %>%
-  group_by(!!! group_variables, cohortday, state) %>%
-  mutate(
-    total_users = sum(users),
-    trans_prob = users / total_users
-  ) %>%
-  ungroup() %>%
-  arrange(!!! group_variables, cohortday, state, next_state)
 
-# all_transitions <- left_join(all_transitions, transition_matrix, by=c('cohortday', 'state', 'next_state'))
-
-checksum <- transition_matrix %>%
-  group_by(cohortday, state) %>%
-  summarise(
-    prob = sum(trans_prob)
-  )
-
-isTRUE(all.equal(checksum$prob, rep(1, nrow(checksum))))
-
-arpdaudata <- mydata %>%
-  group_by(!!! group_variables, cohortday, state) %>%
-  summarise(
-    arpdau = sum(revenue) / sum(n)
-  )
-
-state_probs <- getStateProbs(install_transition, transition_matrix, max_cohortday)
-simulation_results <- run_simulation(state_probs=state_probs, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
-
-result <- simulation_results$result
-result_summary <- simulation_results$result_summary
 
 actual_results <- mydata %>%
   group_by(cohortday) %>%
   mutate(
-    retention_n = ifelse(as.character(as.numeric(state)) >= 4, n, 0),
+    retention_n = ifelse(as.numeric(as.character(state)) >= 4, n, 0),
   ) %>%
   summarise(
     retention = sum(retention_n) / sum(n),
@@ -98,9 +108,11 @@ actual_results <- mydata %>%
   mutate(
     cumarpi = cumsum(arpi)
   ) %>%
+  rename(retention_actual = retention, arpi_actual = arpi, cumarpi_actual = cumarpi) %>%
   left_join(result_summary, by='cohortday')
 
 actual_state_probs <- mydata %>%
+  # filter(date != max(date)) %>%
   # filter(install_date == as.Date("2017-9-30")) %>%
   group_by(cohortday, state) %>%
   summarise(
@@ -108,10 +120,12 @@ actual_state_probs <- mydata %>%
   ) %>%
   group_by(cohortday) %>%
   mutate(
+    cohortday_total = sum(n),
     actual_prob = n / sum(n)
   ) %>% arrange(cohortday, state)
 
 next_state_probs <- mydata %>%
+  filter(date != max(date)) %>%
   # filter(install_date == as.Date("2017-9-30")) %>%
   filter(!is.na(next_state)) %>%
   group_by(cohortday, next_state) %>%
@@ -120,6 +134,7 @@ next_state_probs <- mydata %>%
   ) %>%
   group_by(cohortday) %>%
   mutate(
+    cohortday_total_next = sum(n_next),
     actual_prob_next = n_next / sum(n_next)
   ) %>%
   ungroup() %>%
@@ -139,145 +154,54 @@ testdata <- filter(mydata, install_date == as.Date('2017-7-31')) %>%
 
 # Historical Variance
 
-# group_variables <- quos(campaign_type, install_platform, dup_account)
-# group_variables <- quos()
+hist_variances <- getHistoricalVariance(transitiondata, mydata, group_variables)
+hist_transitions <- hist_variances$hist_transitions
+hist_arpdau <- hist_variances$hist_arpdau
 
-if(length(group_variables) > 0){
-  transitions_cross <- distinct(transitiondata, !!! group_variables)
-  transitions_cross <- merge(transitions_cross, data.frame(install_date = unique(transitiondata$install_date)))
-}else{
-  transitions_cross <- data.frame(install_date = unique(transitiondata$install_date))
-}
+saveRDS(hist_transitions, paste0(filename, '_hist_transitions.RData'))
+saveRDS(hist_arpdau, paste0(filename, '_hist_arpdau.RData'))
 
-transitions_cross <- merge(transitions_cross, data.frame(cohortday = unique(transitiondata$cohortday))) %>% mutate(date = install_date + cohortday)
-transitions_cross <- merge(transitions_cross, data.frame(state = unique(transitiondata$state)))
-transitions_cross <- merge(transitions_cross, data.frame(next_state = unique(transitiondata$state))) %>%
-  filter(!(cohortday == 0 & state %in% c('1', '2', '3'))) %>%
-  arrange(install_date, cohortday, state, next_state)
+hist_transitions <- readRDS(paste0(filename, '_hist_transitions.RData'))
+hist_arpdau <- readRDS(paste0(filename, '_hist_arpdau.RData'))
 
-transition_summary <- transitiondata %>%
-  group_by(!!! group_variables, install_date, date, cohortday, state, next_state) %>%
-  summarise(
-    n = sum(n)
-  )
-
-all_transitions <- left_join(transitions_cross, transition_summary, by=unlist(c(sapply(group_variables, quo_name), 'install_date', 'date', 'cohortday', 'state', 'next_state'))) %>%
-  mutate(
-    n = ifelse(is.na(n), 0, n)
-  ) %>%
-  group_by(!!! group_variables, install_date, date, cohortday, state) %>%
-  mutate(
-    state_count = sum(n),
-    trans_prob = n / state_count
-  )
-
-all_transitions <- all_transitions[complete.cases(all_transitions),]
-
-statedata <- filter(all_transitions, state == 4, next_state == 4, cohortday == 0)
-hist(statedata$trans_prob)
-
-ggplot(statedata, aes(trans_prob)) +
-  geom_density()
-
-hist_transitions <- all_transitions %>%
-  group_by(!!! group_variables, cohortday, state, next_state) %>%
-  summarise(
-    users = sum(n),
-    users_all = sum(state_count),
-    mean_weighted = weighted.mean(trans_prob, state_count),
-    mean = mean(trans_prob),
-    median = median(trans_prob),
-    variance_weighted = weighted.var(trans_prob, state_count, na.rm=TRUE),
-    variance = var(trans_prob, na.rm=TRUE),
-    se_weighted = sqrt(variance_weighted) / sqrt(n()),
-    se = sqrt(variance) / sqrt(n()),
-    dec.05 = quantile(trans_prob, .05),
-    dec.1 = quantile(trans_prob, .1),
-    dec.2 = quantile(trans_prob, .2),
-    dec.25 = quantile(trans_prob, .25),
-    dec.3 = quantile(trans_prob, .3),
-    dec.4 = quantile(trans_prob, .4),
-    dec.5 = quantile(trans_prob, .5),
-    dec.6 = quantile(trans_prob, .6),
-    dec.7 = quantile(trans_prob, .7),
-    dec.75 = quantile(trans_prob, .75),
-    dec.8 = quantile(trans_prob, .8),
-    dec.9 = quantile(trans_prob, .9),
-    dec.95 = quantile(trans_prob, .95),
-    error.95 = qt(.975, df=(n()-1)) * se_weighted,
-    lower.95 = mean_weighted - error.95,
-    upper.95 = mean_weighted + error.95
-  ) %>%
-  filter(users > 0)
-
-
-hist_arpdau <- mydata %>%
-  group_by(!!! group_variables, cohortday, state) %>%
-  summarise(
-    total_rev = sum(revenue),
-    total_users = sum(n),
-    mean_weighted = weighted.mean(arpdau, n),
-    mean = mean(arpdau),
-    median = median(arpdau),
-    variance_weighted = weighted.var(arpdau, n, na.rm=TRUE),
-    variance = var(arpdau, na.rm=TRUE),
-    se_weighted = sqrt(variance_weighted) / sqrt(n()),
-    se = sqrt(variance) / sqrt(n()),
-    dec.05 = quantile(arpdau, .05),
-    dec.1 = quantile(arpdau, .1),
-    dec.2 = quantile(arpdau, .2),
-    dec.25 = quantile(arpdau, .25),
-    dec.3 = quantile(arpdau, .3),
-    dec.4 = quantile(arpdau, .4),
-    dec.5 = quantile(arpdau, .5),
-    dec.6 = quantile(arpdau, .6),
-    dec.7 = quantile(arpdau, .7),
-    dec.75 = quantile(arpdau, .75),
-    dec.8 = quantile(arpdau, .8),
-    dec.9 = quantile(arpdau, .9),
-    dec.95 = quantile(arpdau, .95),
-    error.95 = qt(.975, df=(n()-1)) * se_weighted,
-    lower.95 = mean_weighted - error.95,
-    upper.95 = mean_weighted + error.95
-  ) %>%
-  filter(total_rev != 0)
 
 # Simulate Perturbations
 
-it <- install_transition
-tm <- transition_matrix
-ad <- arpdaudata
-sp <- state_probs
-
-install_transition <- it
-transition_matrix <- tm
-arpdaudata <- ad
-state_probs <- sp
-
-rate_type <- 'state'
-c <- 3
-change_states <- 4
-s <- 4
-tp <- .085
-type <- 4
-affected_states <- c(0, 1, 2)
-weights <- c(.6, .3, .1)
-# a <- 6
-
-filter(state_probs, cohortday == c)
-new_matrices <- simulate_markov(install_transition, transition_matrix, state_probs, arpdaudata, rate_type=rate_type, c=c, change_states=change_states, s=s, affected_states=affected_states, tp=tp, a=a, type=type, cs_weights=weights)
-# changeVector(x, change_states=change_states_index, tp, type=type, affected_states=opposite_state_index, weights=weights)
-filter(new_matrices$state_probs, cohortday == c)
-# new_matrices <- simulate_markov(it, tm, ad, sp, c=c, s=s, ns=ns, tp=tp, type=type, cs=cs, cs_weights=cs_weights, a=a)
-
-filter(transition_matrix, cohortday==c, state==s)
-filter(new_matrices$transition_matrix, cohortday==c, state==s)
-
-filter(arpdaudata, cohortday==c, state==s)
-filter(new_matrices$arpdaudata, cohortday==c, state==s)
-
-
-run_simulation(install_transition, transition_matrix, arpdaudata, max_cohortday = max_cohortday)
+# it <- install_transition
+# tm <- transition_matrix
+# tms <- transitionMatrices
+# ad <- arpdaudata
+# sp <- state_probs
+#
+# install_transition <- it
+# transition_matrix <- tm
+# transitionMatrices <- tms
+# arpdaudata <- ad
+# state_probs <- sp
+#
+#
+# rate_type <- 'transition'
+# c <- 1
+# change_states <- 4
+# s <- 4
+# p_new <- .4
+# type <- 2
+# affected_states <- c(0, 1, 2)
+# weights <- c(.6, .3, .1)
+# # a <- 6
+#
+# View(filter(transition_matrix, cohortday==c))
+# filter(state_probs, cohortday == c)
+# new_matrices <- simulate_markov(install_transition, transition_matrix, state_probs, arpdaudata, rate_type=rate_type, c=c, change_states=change_states, s=s, affected_states=affected_states, tp=tp, a=a, type=type, cs_weights=weights)
+# # changeVector(x, change_states=change_states_index, tp, type=type, affected_states=opposite_state_index, weights=weights)
+# filter(new_matrices$state_probs, cohortday == c)
+# # new_matrices <- simulate_markov(it, tm, ad, sp, c=c, s=s, ns=ns, tp=tp, type=type, cs=cs, cs_weights=cs_weights, a=a)
+#
+# filter(transition_matrix, cohortday==c, state==s)
+# filter(new_matrices$transition_matrix, cohortday==c, state==s)
+#
+# filter(arpdaudata, cohortday==c, state==s)
+# filter(new_matrices$arpdaudata, cohortday==c, state==s)
 
 type <- 2
 
@@ -286,23 +210,37 @@ dec.75.type2.cumarpi <- rep(NA, nrow(hist_transitions))
 tm_time <- rep(NA, nrow(hist_transitions))
 simulate_time <- rep(NA, nrow(hist_transitions))
 
-for(i in 1:nrow(hist_transitions)){
+max_cohortday <- max(hist_transitions$cohortday)
+cumarpi_normal <- filter(result_summary, cohortday == max_cohortday) %>% pull(cumarpi)
+total_installs <- sum(filter(hist_transitions, cohortday == 0)$users)
+
+# state_probs <- getStateProbs(install_transition, transitionMatrices, max_cohortday)
+# run_simulation(state_probs=state_probs, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
+# run_simulation(install_transition=install_transition, transition_data=transition_matrix, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
+
+for(i in 1:max(which(hist_transitions$cohortday <= max_cohortday))){
+# for(i in c(seq(1,5, 1), seq(6, 1740, 100), seq(1741, 1747, 1))){
   if(i %% 10 == 0){print(i)}
   transition_row <- hist_transitions[i,]
   tryCatch({
     a <- Sys.time()
     tm_model <- simulate_markov(install_transition=install_transition,
-      transition_matrix=transition_matrix, rate_type='transition', c=transition_row$cohortday,
+      transition_data=transitionMatrices, rate_type='transition', c=transition_row$cohortday,
       change_states=transition_row$next_state, s=transition_row$state, p_new=transition_row$dec.75,
       type=type
     )
     b <- Sys.time()
-    tm_results <- run_simulation(install_transition=tm_model$install_transition, transition_matrix=tm_model$transition_matrix, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
+    tm_results <- run_simulation(state_probs=state_probs, install_transition=tm_model$install_transition,
+                                          transition_data=tm_model$transition_data, arpdaudata=arpdaudata,
+                                          startday=transition_row$cohortday, max_cohortday=max_cohortday)
+
     c <- Sys.time()
+
     dec.75.type2.cumarpi[i] <- tm_results$cumarpi_max
 
     tm_time[i] <- b - a
     simulate_time[i] <- c - b
+
   }, warning = function(w){
 
   }, error = function(e){
@@ -313,20 +251,51 @@ for(i in 1:nrow(hist_transitions)){
 
 }
 dec.75.type2.cumarpi
+tail(dec.75.type2.cumarpi, 20)
 hist_transitions$dec.75.type2.cumarpi <- dec.75.type2.cumarpi
 
-saveRDS(hist_transitions, 'hist_transitions.RData')
-# hist_transitions <- readRDS('hist_transitions.RData')
-hist_sorted <- hist_transitions %>% arrange(desc(dec.75.type3.cumarpi))
+saveRDS(hist_transitions, paste0(filename, '_hist_transitions.RData'))
+# hist_transitions <- readRDS(paste0(filename, '_hist_transitions.RData'))
 
-# %>%
-#   select(cohortday, state, next_state, mean_weighted, dec.75, dec.75.type3.cumarpi)
+hist_pretty <- hist_transitions %>%
+  arrange(desc(dec.75.type2.cumarpi)) %>%
+  mutate(
+    state = factor(state, labels=STATES),
+    next_state = factor(next_state, labels=STATES),
+    cumarpi_lift = dec.75.type2.cumarpi - cumarpi_normal,
+    cumarpi_percent_lift = cumarpi_lift / cumarpi_normal,
+    total_installs = total_installs,
+    total_rev_lift = cumarpi_lift * total_installs,
+  ) %>%
+  rename(age = cohortday, dec.75.cumarpi = dec.75.type2.cumarpi) %>%
+  mutate(
+    mean_weighted = percent(mean_weighted),
+    mean = percent(mean),
+    median = percent(median),
+    variance_weighted = percent(variance_weighted),
+    variance = percent(variance),
+    se_weighted = percent(se_weighted),
+    se = percent(se),
+    dec.75.cumarpi = format(round(dec.75.cumarpi, 2), nsmall = 2),
+    cumarpi_lift = format(round(cumarpi_lift, 4), nsmall = 4),
+    cumarpi_percent_lift = percent(cumarpi_percent_lift),
+    total_rev_lift = dollar(total_rev_lift),
+    dec.25 = percent(dec.25),
+    dec.75 = percent(dec.75)
+  ) %>%
+  select(age, state, next_state, mean_weighted, se_weighted, dec.25, dec.75, dec.75.cumarpi, cumarpi_lift, cumarpi_percent_lift, total_rev_lift, everything())
 
+write.csv(hist_pretty, paste0(filename, '_hist_transitions_pretty.csv'), row.names=FALSE)
+# hist_pretty <- read_csv(paste0(filename, '_hist_transitions_pretty.csv'))
 
 # Perturb ARPDAU
 
+max_cohortday <- max(hist_arpdau$cohortday)
+cumarpi_normal <- filter(simulation_results$result_summary, cohortday == max_cohortday) %>% pull(cumarpi)
+total_installs <- sum(filter(hist_transitions, cohortday == 0)$users)
+
 dec.75.cumarpi <- rep(NA, nrow(hist_arpdau))
-for(i in 1:nrow(hist_arpdau)){
+for(i in 1:max(which(hist_arpdau$cohortday <= max_cohortday))){
   if(i %% 10 == 0){print(i)}
   transition_row <- hist_arpdau[i,]
   tryCatch({
@@ -351,11 +320,201 @@ for(i in 1:nrow(hist_arpdau)){
 dec.75.cumarpi
 hist_arpdau$dec.75.cumarpi <- dec.75.cumarpi
 
-saveRDS(hist_arpdau, 'hist_arpdau.RData')
+saveRDS(hist_arpdau, paste0(filename, '_hist_arpdau.RData'))
 # hist_arpdau <- readRDS('hist_arpdau.RData')
-arpdau_sorted <- hist_arpdau %>% arrange(desc(dec.75.cumarpi))
+
+arpdau_pretty <- hist_arpdau
+levels(arpdau_pretty$state) <- STATES
+arpdau_pretty <- arpdau_pretty %>%
+  arrange(desc(dec.75.cumarpi)) %>%
+  mutate(
+    cumarpi_lift = dec.75.cumarpi - cumarpi_normal,
+    cumarpi_percent_lift = cumarpi_lift / cumarpi_normal,
+    total_installs = total_installs,
+    total_rev_lift = cumarpi_lift * total_installs,
+  ) %>%
+  rename(age = cohortday) %>%
+  mutate(
+    mean_weighted = format(round(mean_weighted, 2), nsmall = 2),
+    mean = format(round(mean, 2), nsmall = 2),
+    median = format(round(median, 2), nsmall = 2),
+    variance_weighted = format(round(variance_weighted, 2), nsmall = 2),
+    variance = format(round(variance, 2), nsmall = 2),
+    se_weighted = format(round(se_weighted, 2), nsmall = 2),
+    se = format(round(se, 2), nsmall = 2),
+    dec.75.cumarpi = format(round(dec.75.cumarpi, 2), nsmall = 2),
+    cumarpi_lift = format(round(cumarpi_lift, 4), nsmall = 4),
+    cumarpi_percent_lift = percent(cumarpi_percent_lift),
+    total_rev_lift = dollar(total_rev_lift),
+    total_rev = dollar(total_rev),
+    dec.25 = format(round(dec.25, 2), nsmall = 2),
+    dec.75 = format(round(dec.75, 2), nsmall = 2)
+  ) %>%
+  select(age, state, mean_weighted, se_weighted, dec.25, dec.75, dec.75.cumarpi, cumarpi_lift, cumarpi_percent_lift, total_rev_lift, everything())
+
+
+write.csv(arpdau_pretty, paste0(filename, '_hist_arpdaus_pretty.csv'), row.names=FALSE)
 
 
 
 
+# Compare two sets of transition rates and arpdaus
 
+save(max_cohortday, install_transition, transition_matrix, arpdaudata, transitionMatrices, state_probs, simulation_results, file=paste0(filename, '_compare_data.RData'))
+save(max_cohortday, install_transition, transition_matrix, arpdaudata, transitionMatrices, state_probs, simulation_results, hist_transitions, hist_arpdau, file=paste0(filename, '_all_data.RData'))
+
+load('miso_markov_data_2018-12-29_2019-01-04_compare_data.RData')
+tm_new <- transition_matrix
+arpdau_new <- arpdaudata
+
+load('miso_markov_data_2018-11-01_2018-12-28_all_data.RData')
+
+# Compare current data to historical
+
+transition_compare <- tm_new
+
+hist_compare <- merge(hist_transitions, transition_compare, by=c('cohortday', 'state', 'next_state')) %>%
+  mutate(
+    tscore = (trans_prob - mean_weighted) / se_weighted
+  ) %>%
+  rename(current_rate = trans_prob)
+
+max_cohortday <- max(hist_compare$cohortday)
+cumarpi_normal <- filter(simulation_results$result_summary, cohortday == max_cohortday) %>% pull(cumarpi)
+total_installs <- sum(filter(hist_transitions, cohortday == 0)$users)
+
+type <- 2
+
+current_rate.type2.cumarpi <- rep(NA, nrow(hist_compare))
+
+tm_time <- rep(NA, nrow(hist_compare))
+simulate_time <- rep(NA, nrow(hist_compare))
+
+run_simulation(install_transition=install_transition, transition_data=transition_matrix, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
+
+for(i in 1:max(which(hist_compare$cohortday < max_cohortday))){
+  # for(i in c(seq(1,5, 1), seq(6, 6506, 250), seq(7300, 7308, 1))){
+  if(i %% 10 == 0){print(i)}
+  transition_row <- hist_compare[i,]
+  tryCatch({
+    a <- Sys.time()
+    tm_model <- simulate_markov(install_transition=install_transition,
+                                transition_data=transition_matrix, rate_type='transition', c=transition_row$cohortday,
+                                change_states=transition_row$next_state, s=transition_row$state, p_new=transition_row$current_rate,
+                                type=type
+    )
+    b <- Sys.time()
+    tm_results <- run_simulation(install_transition=tm_model$install_transition, transition_data=tm_model$transition_data, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
+    c <- Sys.time()
+
+    current_rate.type2.cumarpi[i] <- tm_results$cumarpi_max
+
+    tm_time[i] <- b - a
+    simulate_time[i] <- c - b
+  }, warning = function(w){
+
+  }, error = function(e){
+    print(paste('Error on', i, e, sep=' '))
+  }, finally = {
+
+  })
+
+}
+current_rate.type2.cumarpi
+hist_compare$current_rate.type2.cumarpi <- current_rate.type2.cumarpi
+
+hist_sorted <- hist_compare %>% arrange(desc(current_rate.type2.cumarpi))
+
+hist_pretty <- hist_sorted %>%
+  mutate(
+    state = factor(state, labels=STATES),
+    next_state = factor(next_state, labels=STATES),
+    cumarpi_lift = current_rate.type2.cumarpi - cumarpi_normal,
+    cumarpi_percent_lift = cumarpi_lift / cumarpi_normal,
+    total_installs = total_installs,
+    total_rev_lift_current_rate = cumarpi_lift * total_installs,
+  ) %>%
+  rename(age = cohortday, average_rate = mean_weighted, target_25th_percentile = dec.25, target_75th_percentile = dec.75) %>%
+  mutate(
+    average_rate = percent(average_rate),
+    current_rate = percent(current_rate),
+    target_25th_percentile = percent(target_25th_percentile),
+    target_75th_percentile = percent(target_75th_percentile),
+    se_weighted = percent(se_weighted),
+    tscore = format(round(tscore, 2), nsmall = 2),
+    cumarpi_lift = format(round(cumarpi_lift, 4), nsmall = 4),
+    cumarpi_percent_lift = percent(cumarpi_percent_lift),
+    total_rev_lift_current_rate = format(round(total_rev_lift_current_rate, 2), nsmall = 2)
+  ) %>%
+  select(age, state, next_state, average_rate, current_rate, target_25th_percentile, target_75th_percentile, se_weighted, tscore, cumarpi_lift, cumarpi_percent_lift, total_rev_lift_current_rate)
+
+write.csv(hist_pretty, paste(filename, '_trans_compare.csv'), row.names=FALSE)
+# saveRDS(hist_compare, paste0(filename, '_hist_transitions.RData'))
+
+
+# Compare ARPDAU
+
+arpdau_compare <- arpdau_new
+
+hist_compare <- merge(hist_arpdau, arpdau_compare, by=c('cohortday', 'state')) %>%
+  mutate(
+    tscore = (arpdau - mean_weighted) / se_weighted
+  ) %>%
+  rename(current_arpdau = arpdau)
+
+max_cohortday <- max(hist_compare$cohortday)
+cumarpi_normal <- filter(simulation_results$result_summary, cohortday == max_cohortday) %>% pull(cumarpi)
+
+run_simulation(state_probs=state_probs, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
+
+current_arpdau.cumarpi <- rep(NA, nrow(hist_arpdau))
+for(i in 1:max(which(hist_arpdau$cohortday <= max_cohortday))){
+  if(i %% 10 == 0){print(i)}
+  transition_row <- hist_compare[i,]
+  tryCatch({
+    a <- Sys.time()
+    arpdau_changed <- simulate_arpdau(arpdaudata, transition_row$cohortday, transition_row$state, transition_row$current_arpdau)
+    b <- Sys.time()
+    tm_results <- run_simulation(state_probs=state_probs, arpdaudata=arpdau_changed, max_cohortday=max_cohortday)
+    c <- Sys.time()
+    current_arpdau.cumarpi[i] <- tm_results$cumarpi_max
+
+    tm_time[i] <- b - a
+    simulate_time[i] <- c - b
+  }, warning = function(w){
+
+  }, error = function(e){
+    print(paste('Error on', i, e, sep=' '))
+  }, finally = {
+
+  })
+
+}
+current_arpdau.cumarpi
+hist_compare$current_arpdau.cumarpi <- current_arpdau.cumarpi
+
+# saveRDS(hist_arpdau, paste0(filename, '_hist_arpdau.RData'))
+# hist_arpdau <- readRDS('hist_arpdau.RData')
+arpdau_sorted <- hist_compare %>% arrange(desc(current_arpdau.cumarpi))
+
+levels(arpdau_sorted$state) <- STATES
+arpdau_pretty <- arpdau_sorted %>%
+  mutate(
+    cumarpi_lift = current_arpdau.cumarpi - cumarpi_normal,
+    total_installs = total_installs,
+    total_rev_lift_current_rate = cumarpi_lift * total_installs,
+  ) %>%
+  rename(age = cohortday, average_arpdau = mean_weighted, target_25th_percentile = dec.25, target_75th_percentile = dec.75) %>%
+  mutate(
+    average_arpdau = format(round(average_arpdau, 2), nsmall = 2),
+    current_arpdau = format(round(current_arpdau, 2), nsmall = 2),
+    target_25th_percentile = format(round(target_25th_percentile, 2), nsmall = 2),
+    target_75th_percentile = format(round(target_75th_percentile, 2), nsmall = 2),
+    se_weighted = format(round(se_weighted, 2), nsmall = 2),
+    tscore = format(round(tscore, 2), nsmall = 2),
+    cumarpi_lift = format(round(cumarpi_lift, 4), nsmall = 4),
+    total_rev_lift_current_rate = format(round(total_rev_lift_current_rate, 2), nsmall = 2)
+  ) %>%
+  select(age, state, average_arpdau, current_arpdau, target_25th_percentile, target_75th_percentile, se_weighted, tscore, cumarpi_lift, total_rev_lift_current_rate)
+
+write.csv(arpdau_pretty, paste(filename, '_arpdau_compare.csv'), row.names=FALSE)

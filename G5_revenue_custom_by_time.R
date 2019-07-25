@@ -149,7 +149,8 @@ name <- paste(filename, 'weekly', sep='_')
 # Run Model
 
 join_vars <- quos(cohortday, !!! group_variables, !! time_variable)
-dates <- data.frame(date = unique(newdata$install_date))
+# dates <- data.frame(date = unique(newdata$install_date))
+dates <- data.frame(date = dates)
 
 alldata <- merge(newdata, dates) %>% filter(date >= install_date) %>%
   mutate(

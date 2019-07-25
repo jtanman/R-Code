@@ -2,45 +2,51 @@
 
 # Date: 1/15/2019
 
-p_load(ggplot2, reshape2, plotly, lubridate, zoo, expm, dplyr, beepr)
+p_load(reshape2, plotly, zoo, expm, beepr, scales, tidyverse)
 
 source('~/.Rprofile')
 source('~/MZ/R Code/generalized_markov_model_helper.R')
 setwd(datapath)
 
-dataname <- 'miso_markov_data'
+dataname <- 'niso_dark_world_markov'
 startdate <- as.Date('2018-11-01')
-enddate <- as.Date('2019-01-14')
+enddate <- as.Date('2019-01-20')
 daterange <- paste(startdate, enddate, sep='_')
 filename <- paste0(dataname, '_', daterange)
 
 
-mydata <- read.csv(paste0(filename, '.csv'))
+mydata <- read.csv(paste0('revenue_impact_dark_world', '.csv'))
+
+mydata <- read_csv(paste0('revenue_impact_dark_world', '.csv'), col_types = cols(
+  campaign_type = col_factor(NULL),
+  install_platform = col_factor(NULL),
+  dup_account = col_factor(NULL),
+  state = col_factor(NULL),
+  next_state = col_factor(NULL)
+))
 
 # hive parsing
 
 mydata <- mydata %>%
-  select(-X) %>%
   filter(install_platform %in% c('android', 'iOS')) %>%
   rename(date = curr_date) %>%
   mutate(
-    install_date = as.Date(install_date),
-    date = as.Date(date),
-    install_platform = factor(install_platform),
-    state = as.factor(state),
-    next_state = as.factor(next_state),
     trans_prob = n / state_count,
     arpdau_overall = revenue_overall / state_count,
     arpdau = revenue / n
   )
 
-saveRDS(mydata, paste0(filename, '.RData'))
+saveRDS(mydata, paste0('revenue_impact_dark_world', '.RData'))
 mydata <- readRDS(paste0(filename, '.RData'))
 
 # Date filter
 
 weekdata <- filter(mydata, date > max(date) - 8)
 histdata <- filter(mydata, date <= max(date) - 8)
+
+weekdata <- filter(mydata, date >= as.Date('2019-04-21'))
+histdata <- filter(mydata, date < as.Date('2019-04-21'))
+
 daterange <- paste0(as.Date(min(weekdata$date)), '_', as.Date(max(weekdata$date)))
 filename <- paste0(dataname, '_', daterange)
 
@@ -53,7 +59,7 @@ hist_transitiondata <- hist_markov$transitiondata
 hist_install_transition <- hist_markov$install_transition
 hist_transition_matrix <- hist_markov$transition_matrix
 hist_arpdaudata <- hist_markov$arpdaudata
-hist_transitionMatries <- hist_markov$transitionMatries
+hist_transitionMatrices <- hist_markov$transitionMatrices
 hist_state_probs <- hist_markov$state_probs
 hist_simulation_results <- hist_markov$simulation_results
 hist_result <- hist_markov$result
@@ -100,20 +106,23 @@ current_rate.type2.cumarpi <- rep(NA, nrow(hist_compare))
 tm_time <- rep(NA, nrow(hist_compare))
 simulate_time <- rep(NA, nrow(hist_compare))
 
+test_indices <- c(seq(1,5, 1), seq(6, 1370, 100), seq(1375, 1379, 1))
 
 for(i in 1:max(which(hist_compare$cohortday < max_cohortday))){
-  # for(i in c(seq(1,5, 1), seq(6, 6506, 250), seq(7300, 7308, 1))){
+# for(i in test_indices){
   if(i %% 10 == 0){print(i)}
   transition_row <- hist_compare[i,]
   tryCatch({
     a <- Sys.time()
     tm_model <- simulate_markov(install_transition=hist_install_transition,
-                                transition_data=hist_transition_matrix, rate_type='transition', c=transition_row$cohortday,
+                                transition_data=hist_transitionMatrices, rate_type='transition', c=transition_row$cohortday,
                                 change_states=transition_row$next_state, s=transition_row$state, p_new=transition_row$current_rate,
                                 type=type
                                )
     b <- Sys.time()
-    tm_results <- run_simulation(install_transition=tm_model$install_transition, transition_matrix=tm_model$transition_matrix, arpdaudata=hist_arpdaudata, max_cohortday=max_cohortday)
+    tm_results <- run_simulation(state_probs=hist_state_probs, install_transition=tm_model$install_transition,
+                                          transition_data=tm_model$transition_data, arpdaudata=hist_arpdaudata,
+                                          startday=transition_row$cohortday, max_cohortday=max_cohortday)
     c <- Sys.time()
 
     current_rate.type2.cumarpi[i] <- tm_results$cumarpi_max
@@ -161,7 +170,7 @@ write.csv(hist_pretty, paste0(filename, '_trans_compare.csv'), row.names=FALSE)
 
 # Compare ARPDAU
 
-hist_compare <- merge(hist_arpdau, week_arpdaudata, by=c('cohortday', 'state')) %>%
+hist_compare <- merge(hist_arpdau, week_arpdaudata, by=c('cohortday', 'state'), all.x=TRUE) %>%
   mutate(
     tscore = (arpdau - mean_weighted) / se_weighted
   ) %>%
@@ -172,8 +181,8 @@ cumarpi_normal <- filter(hist_result_summary, cohortday == max_cohortday) %>% pu
 
 # run_simulation(state_probs=state_probs, arpdaudata=arpdaudata, max_cohortday=max_cohortday)
 
-current_arpdau.cumarpi <- rep(NA, nrow(hist_arpdau))
-for(i in 1:max(which(hist_arpdau$cohortday <= max_cohortday))){
+current_arpdau.cumarpi <- rep(NA, nrow(hist_compare))
+for(i in 1:max(which(hist_compare$cohortday <= max_cohortday))){
   if(i %% 10 == 0){print(i)}
   transition_row <- hist_compare[i,]
   tryCatch({
