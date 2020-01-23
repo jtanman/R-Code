@@ -400,8 +400,6 @@ getRevMonthly <- function(predictdata, group_variables=NULL, detailed=FALSE, all
 parseCohortData <- function(cohortdata, group_variables=NULL, detailed=FALSE){
   # parse cohortdata from hive
 
-
-
   cohortdata <- cohortdata %>%
   filter(install_platform == 'iOS' | install_platform == 'android') %>%
   # rename(install_date = install_event_date) %>%
@@ -525,6 +523,65 @@ regroupCohortData <- function(cohortdata, group_variables, cohortday_start=0){
     ) %>%
     ungroup() %>%
     arrange(!!! group_variables, cohortday)
+  
+  return(cohortdata)
+}
+
+
+regroupDateData <- function(cohortdata, group_variables, current_group_variables){
+  # regroup cohortdata according to group_variables
+  
+  installdata <- cohortdata %>%
+    group_by(install_date, !!! current_group_variables) %>%
+    summarise(
+      installs = mean(installs)
+    ) %>%
+    group_by(install_date, !!! group_variables) %>%
+    summarise(
+      installs = sum(installs)
+    ) %>%
+    rename(date = install_date)
+  
+  cohortdata <- cohortdata %>%
+    group_by(date, !!! group_variables) %>%
+    summarise(
+      n = n(),
+      dau = sum(dau),
+      rpdau = sum(rpdau),
+      rpdau_5 = sum(rpdau_5),
+      rpdau_20 = sum(rpdau_20),
+      rpdau_100 = sum(rpdau_100),
+      payers = sum(payers),
+      payers_5 = sum(payers_5),
+      payers_20 = sum(payers_20),
+      payers_100 = sum(payers_100),
+      payers_unique = sum(payers_unique),
+      payers_streak = sum(payers_streak),
+      revenue = sum(revenue),
+      revenue_npu = sum(revenue_npu),
+      revenue_rpdau = sum(revenue_rpdau),
+      revenue_unique = sum(revenue_unique),
+      revenue_streak = sum(revenue_streak),
+      revenue_npu = sum(revenue_npu),
+      revenue_rpdau = sum(revenue_rpdau),
+      arpdau = revenue / dau,
+      arppu = revenue / payers,
+      conversion = payers / dau,
+      streak_conversion = payers_streak / dau,
+      arprpdau = revenue_rpdau / rpdau,
+      rpdau_revshare = revenue_rpdau / revenue,
+      streak_revshare = revenue_streak / revenue,
+      streak_arpdau = revenue_streak / payers_streak,
+      unique_arpdau = revenue_unique / payers_unique,
+    ) %>%
+    ungroup() %>%
+    mutate(
+      cumrev = cumsum(revenue)
+    ) %>%
+    arrange(!!! group_variables, date)
+  
+  cohortdata <- installdata %>%
+    left_join(cohortdata, by='date')
   
   return(cohortdata)
 }

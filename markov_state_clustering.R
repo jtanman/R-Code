@@ -1,3 +1,4 @@
+
 # By: James Tan
 
 # Date: 6/19/2019
@@ -83,13 +84,13 @@ ggplot(cluster_data, aes(x=trans_4_4, y=trans_5_5, color=cluster_name)) +
 ggsave_default('markov_clusters_by_transition_rates.png')
 
 plotdata <- filter(cluster_data, cohortday >= 3)
-ggplot(plotdata, aes(x=trans_4_4, y=trans_5_5, color=cluster_name)) +
+ggplot(plotdata, aes(x=trans_4_4, y=trans_4_5, color=cluster_name)) +
   geom_point() +
   scale_color_brewer(palette = 'Spectral') +
   labs(title = 'Clusters by Retention and RPDAU Retention', caption='Only graphing 2 out of 40 transition probabilities') +
-  xlab('$0 DAU to $0 DAU') +
+  # xlab('$0 DAU to $0 DAU') +
   scale_x_continuous(labels = percent) +
-  ylab('$5 DAU to $5 DAU') +
+  # ylab('$5 DAU to $5 DAU') +
   scale_y_continuous(labels = percent) +
   theme(plot.title = element_text(hjust=.5))
 

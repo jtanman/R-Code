@@ -16,14 +16,16 @@ game <- 'niso'
 
 if(game == 'miso'){
   startdate <- MISO_START_DATE
+  enddate <- as.Date('2019-01-20')
 }else if(game == 'niso'){
   startdate <- NISO_START_DATE
+  enddate <- as.Date('2019-02-09')
 }else{
   stop('game not recognized')
 }
 
 dataname <- paste0(game, '_markov_data')
-enddate <- as.Date('2019-02-09')
+
 daterange <- paste(startdate, enddate, sep='_')
 filename <- paste0(dataname, '_', daterange)
 

@@ -394,21 +394,19 @@ getStateProbs <- function(install_transition, transition_data, max_cohortday=270
 run_simulation <- function(state_probs=NA, install_transition=NA, transition_data=NA, arpdaudata, startday=NA, max_cohortday=270){
   # run simulation given either the state probability matrix OR transition matrices then combined with the arpdau data
   # if startday is given, function will recalculate state probabilities starting from startday
-  
+
   if(isTRUE(is.na(state_probs))){
+    # rebuild state probs entirely from transition data
     
-    if(!is.na(startday)){
-      # rebuild state probs from startday using transition data
-      
-      state_probs <- getStateProbs(install_transition, transition_data, startday=startday, max_cohortday=max_cohortday, state_probs=state_probs)
-      
-    }else{
-      # rebuild state probs entirely from transition data
-      
-      state_probs <- getStateProbs(install_transition, transition_data, max_cohortday=max_cohortday)  
-      
-    }
+    state_probs <- getStateProbs(install_transition, transition_data, max_cohortday=max_cohortday)
     
+  }else if(!is.na(startday)){
+    # rebuild state probs from startday using transition data
+    
+    state_probs <- getStateProbs(install_transition, transition_data, startday=startday, max_cohortday=max_cohortday, state_probs=state_probs)
+    
+  }else{
+    # use given state probs
   }
 
   result <- state_probs %>%

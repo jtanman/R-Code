@@ -16,6 +16,8 @@ source('~/MZ/R Code/revenue_impact_finance_helper.R')
 # else null
 # dark world release date
 
+game_id = data.frame(game_id=c('15', '19', '23', '27'), game=c('GoW', 'MS', 'FFXV', 'WWR'))
+
 mydata <- read_csv('games_arpi.csv', col_types = cols(
   cohort = col_factor(),
   game = col_factor()
@@ -26,6 +28,57 @@ mydata <- read_csv('games_arpi.csv', col_types = cols(
   mutate(
     cohortday = as.integer(cohortday)
   )
+
+mydata <- read_csv('games_arpi_month.csv', col_types = cols(
+  game_id = col_factor()
+)) %>%
+  group_by(game_id) %>%
+  arrange(year, month) %>%
+  mutate(
+    cohort_month = row_number() - 1
+  ) %>%
+  ungroup() %>%
+  pivot_longer(contains('revenue'), names_to = c('cohortday'), names_pattern = 'd([[:alnum:]]+)revenue', values_to='arpi', values_drop_na = TRUE) %>%
+  extract(cohortday, 'cohortday', 'd([[:alnum:]]+)revenue') %>%
+  mutate(
+    cohortday = as.integer(cohortday)
+  ) %>%
+  filter(cohortday <= 730) %>%
+  left_join(game_id, by='game_id') %>%
+  arrange(game_id, cohort_month, cohortday)
+
+mydata <- read_csv('ARPX_crosstab.csv', col_types = cols(
+  game = col_factor()
+)) %>%
+  group_by(game) %>%
+  arrange(date) %>%
+  mutate(cohort_month = row_number() - 1) %>%
+  pivot_longer(contains('ARPX'), names_to = c('cohortday'), names_pattern = 'D([[:alnum:]]+)_ARPX', values_to='arpi', values_drop_na = TRUE) %>%
+  extract(cohortday, 'cohortday', 'D([[:alnum:]]+)_ARPX') %>%
+  mutate(
+    cohortday = as.integer(cohortday),
+    arpi = parse_number(arpi)
+  ) %>%
+  arrange(game, date)
+
+mydata <- mydata %>%
+  filter(
+    !(game == 'GOW' & date >= as.Date('2017-07-01')),
+    !(game == 'MS' & date >= as.Date('2017-07-01')),
+  )
+
+zero_cohort <- mydata %>%
+  filter(cohort_month == 0) %>%
+  select('game', 'cohortday', 'arpi')
+
+percentdata <- mydata %>%
+  left_join(zero_cohort, by=c('game', 'cohortday')) %>%
+  mutate(
+    arpi_percent = arpi.x / arpi.y
+  )
+
+outlierdata <- filter(percentdata, arpi_percent > 5) %>%
+  distinct(game, date)
 
 plotdata <- mydata
 plotdata <- mydata %>%
@@ -40,6 +93,9 @@ plotdata <- mydata %>%
     light = floor(light_base * 65) + 35,
     hex = hcl(h = hue, l = light, c=100)
   )
+
+plotdata <- plotdata %>%
+  anti_join(outlierdata, by=c('game', 'date'))
 
 colors <- plotdata %>%
   distinct(cohort, hex)
@@ -70,7 +126,41 @@ ggplot(plotdata, aes(cohortday, arpi, color=cohort_month, group=cohort_month)) +
   labs(title='ARPI Curves by Cohort Month') +
   theme(plot.title = element_text(hjust=.5))
   
-ggsave_default('games_arpi.png', height=9 , width=10)
+ggsave_default('games_arpi_marketing_data.png', height=9 , width=16)
+
+plotdata <- percentdata %>%
+  arrange(game, cohort_month) %>%
+  mutate(
+    cohort_month = as.integer(as.character(cohort_month)),
+    cohort = fct_inorder(paste(game, cohort_month)),
+    game_int = as.integer(game) - 1,
+    hue_base = game_int / (max(game_int) + 1),
+    light_base = (cohort_month / (max(cohort_month) + 1)),
+    hue = floor(hue_base * 360) + 15,
+    light = floor(light_base * 65) + 35,
+    hex = hcl(h = hue, l = light, c=100)
+  )
+
+plotdata <- plotdata %>%
+  anti_join(outlierdata, by=c('game', 'date'))
+
+plotdata <- filter(plotdata, game != 'MS')
+
+ggplot(plotdata, aes(cohortday, arpi_percent, color=cohort_month, group=cohort_month)) +
+  geom_line() +
+  facet_wrap(~game) +
+  scale_color_distiller(palette='YlGnBu', guide=guide_colorbar(reverse=TRUE)) +
+  # scale_color_viridis(option = 'plasma') +
+  # scale_color_gradientn(colors=rainbow(length(unique(plotdata$cohort_month)))) +
+  labs(title='ARPI Percentage Curves by Cohort Month') +
+  scale_y_continuous(labels = scales::percent) +
+  theme(plot.title = element_text(hjust=.5))
+
+ggsave_default('games_arpi_percent.png', height=9 , width=16)
+
+csv_data <- filter(percentdata, arpi_percent > 10) %>%
+  rename(revenue = arpi.x, revenue_cohort_0 = arpi.y)
+write_csv(csv_data, 'user_level_by_month.csv')
 
 p2data <- extract(pivotdata, cohortday, 'cohortday', 'D([[:alnum:]]+) ARPI')
 
